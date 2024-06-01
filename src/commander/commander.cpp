@@ -9,27 +9,19 @@
 
 using namespace std;
 
-static bool check_num(string str) {
-    for (char c : str) {
-        if (!isdigit(c)) 
-            return false;
-    }
-    return true;
-}
-
 void Commander::parse_argv(char** argv) {
 
     string type_(argv[3]);
 
     if (type_ == "issueJob") {
         type = ISSUE_JOB;
-        ASSERT_COND(argc > 0, "Usage: %s issueJob <command>\n", argv[0]);
+        ASSERT_COND(argc > 0, "Usage: %s <serverName> <portNum> issueJob <command>\n", argv[0]);
 
         this->argv = &argv[4];
     }
     else if (type_ == "setConcurrency") {
         type = SET_CONCURRENCY;
-        ASSERT_COND(argc == 1, "Usage: %s setConcurrency <natural number>\n", argv[0]);
+        ASSERT_COND(argc == 1, "Usage: %s <serverName> <portNum> setConcurrency <natural number>\n", argv[0]);
 
         string str(argv[4]);
         ASSERT_COND(check_num(str), "'%s' is not a natural number!\n", argv[4]);
@@ -37,7 +29,7 @@ void Commander::parse_argv(char** argv) {
     }
     else if (type_ == "stop") {
         type = STOP_JOB;
-        ASSERT_COND(argc == 1, "Usage: %s stop job_X\n", argv[0]);
+        ASSERT_COND(argc == 1, "Usage: %s <serverName> <portNum> stop job_X\n", argv[0]);
 
         string str(argv[4]);
         ASSERT_COND(str.size() > 4 && str.substr(0, 4) == "job_" && check_num(str.substr(4)),
@@ -46,11 +38,11 @@ void Commander::parse_argv(char** argv) {
     }
     else if (type_ == "poll") {
         type = POLL;
-        ASSERT_COND(argc == 0, "Usage: %s poll\n", argv[0]);
+        ASSERT_COND(argc == 0, "Usage: %s <serverName> <portNum> poll\n", argv[0]);
     }
     else if (type_ == "exit") {
         type = EXIT;
-        ASSERT_COND(argc == 0, "Usage: %s exit\n", argv[0]);
+        ASSERT_COND(argc == 0, "Usage: %s <serverName> <portNum> exit\n", argv[0]);
     }
     else {
         printf("Commands available: 'issueJob', 'setConcurrency', 'stop', 'poll', 'exit'\n");
@@ -59,7 +51,7 @@ void Commander::parse_argv(char** argv) {
 
 }
 
-Commander::Commander(size_t argc_, char** argv): argc(argc_ - 4), number(0) {
+Commander::Commander(size_t argc_, char** argv) : argc(argc_ - 4), number(0) {
     ASSERT_COND(argc_ >= 4, "Usage: %s <serverName> <portNum> <jobCommanderInputCommand> <optionalArgs>\n", argv[0]);
 
     parse_argv(argv);
@@ -101,41 +93,54 @@ void Commander::communicate(char** argv) {
 }
 
 void Commander::issue_job() {
-    send_args(sock, argc, argv);
-    receive_job(); 
+    // send_args(sock, argc, argv);
+    // receive_job(); 
 }
 
-void Commander::stop_job() {
-    size_t size;
-    fd_read(fdr, &size, sizeof(size)); // Size of job_XX removed/terminated
+void Commander::set_concurrency() {
+    socket_write(sock, &number, sizeof(number));
 
-    char* msg = new char[size];
-    fd_read(fdr, msg, size); // job_XX removed/terminated
-
+    size_t len;
+    socket_read(sock, &len, sizeof(len));
+     
+    char* msg = new char[len];
+    socket_read(sock, msg, len);
     printf("%s\n", msg);
 
     delete [] msg;  
 }
 
-void Commander::poll(CommandType type) {
+void Commander::stop_job() {
+    // size_t size;
+    // fd_read(fdr, &size, sizeof(size)); // Size of job_XX removed/terminated
 
-    printf("%s\n", type == POLL_QUEUED ? "+-----------+\n|Queued Jobs|\n+-----------+" : "+------------+\n|Running Jobs|\n+------------+");
+    // char* msg = new char[size];
+    // fd_read(fdr, msg, size); // job_XX removed/terminated
 
-    size_t size;
-    fd_read(fdr, &size, sizeof(size)); // Nuber of jobs
+    // printf("%s\n", msg);
 
-    for (size_t i = 0; i < size; i++)
-        receive_job();    
+    // delete [] msg;
+}
+
+void Commander::poll() {
+
+    // printf("%s\n", type == POLL_QUEUED ? "+-----------+\n|Queued Jobs|\n+-----------+" : "+------------+\n|Running Jobs|\n+------------+");
+
+    // size_t size;
+    // fd_read(fdr, &size, sizeof(size)); // Nuber of jobs
+
+    // for (size_t i = 0; i < size; i++)
+    //     receive_job();    
 }
 
 void Commander::exit() {    
-    char msg[sizeof(TERMINATION_MSG)];
-    fd_read(fdr, msg, sizeof(TERMINATION_MSG));
+    // char msg[sizeof(TERMINATION_MSG)];
+    // fd_read(fdr, msg, sizeof(TERMINATION_MSG));
 
-    if (string(msg) != TERMINATION_MSG) {
-        printf("Termination message received from server was corrupted!\n");
-        std::exit(EXIT_FAILURE);
-    }
+    // if (string(msg) != TERMINATION_MSG) {
+    //     printf("Termination message received from server was corrupted!\n");
+    //     std::exit(EXIT_FAILURE);
+    // }
 
-    printf("%s\n", TERMINATION_MSG);
+    // printf("%s\n", TERMINATION_MSG);
 }

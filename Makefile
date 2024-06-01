@@ -43,7 +43,7 @@ commander: $(COMMANDER_OBJS)
 all: 
 	make -s server
 	make -s commander
-	@gcc ./scripting/test_cases/progDelay.c -o progDelay
+#@gcc ./scripting/test_cases/progDelay.c -o progDelay
 
 test_cases:
 	@chmod u+x ./scripting/test_cases/scripts/custom/give_perms.sh

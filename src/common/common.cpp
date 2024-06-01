@@ -2,6 +2,16 @@
 #include <cstring>
 #include "common.hpp"
 
+using namespace std;
+
+bool check_num(string str) {
+    for (char c : str) {
+        if (!isdigit(c)) 
+            return false;
+    }
+    return true;
+}
+
 void socket_read(int sock, void* address_, int size) {
     int ret;
     char* address = (char*)address_;
@@ -33,4 +43,21 @@ void send_args(int sock, size_t argc, char** argv) {
         socket_write(sock, &len, sizeof(len)); // send bytes of each arg
         socket_write(sock, argv[i], len); // send arg
     }
+}
+
+char** receive_args(int sock, size_t* argc) {
+    socket_read(sock, argc, sizeof(*argc)); // Read number of arguments
+
+    char** argv = new char*[*argc + 1];
+    argv[*argc] = NULL;
+
+    for (size_t i = 0; i < *argc; i++) {
+        size_t len;
+        socket_read(sock, &len, sizeof(len)); // Read bytes of each arg, contains '\0'
+
+        argv[i] = new char[len];
+        socket_read(sock, argv[i], len);
+    }
+
+    return argv;
 }

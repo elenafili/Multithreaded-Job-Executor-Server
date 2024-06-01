@@ -37,7 +37,10 @@ typedef enum {
     EXIT,
 } CommandType;
 
+bool check_num(std::string str);
+
 void socket_read(int sock, void* address, int size);
 void socket_write(int sock, void* address, int size);
 
 void send_args(int sock, size_t argc, char** argv);
+char** receive_args(int sock, size_t* argc);

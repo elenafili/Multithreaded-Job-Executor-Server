@@ -2,7 +2,7 @@
 
 int main(int argc, char* argv[]) {
 
-    Server server;
+    Server server((size_t)argc, argv);
     server.run();
     
     return 0;

@@ -6,7 +6,7 @@ class Commander {
         size_t argc;
         char** argv;
         CommandType type;
-        int number;
+        size_t number;
         uint16_t port;
         int sock;
         struct sockaddr_in server;
