@@ -34,6 +34,25 @@ void socket_write(int sock, void* address_, int size) {
     }
 }
 
+void send_msg(int sock, string msg) {
+    size_t len = msg.length() + 1;
+    socket_write(sock, &len, sizeof(len));
+    socket_write(sock, msg.data(), len);
+}
+
+string receive_msg(int sock) {
+    size_t len;
+    socket_read(sock, &len, sizeof(len));
+
+    char* str = new char[len];
+    socket_read(sock, str, len);
+
+    string msg(str);
+    delete [] str;
+
+    return msg;
+}
+
 void send_args(int sock, size_t argc, char** argv) {
     socket_write(sock, &argc, sizeof(argc)); // write number of args
 

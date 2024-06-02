@@ -16,6 +16,25 @@ struct ControllerArgs {
     ControllerArgs(Server* server_, int socket_) : server(server_), socket(socket_) {}
 };
 
+struct Job {
+    pid_t pid;
+    size_t jid;
+    size_t argc;
+    char** argv;
+    int socket;
+    
+    Job(pid_t pid_, size_t jid_, size_t argc_, char** argv_, int socket_)
+    : pid(pid_), jid(jid_), argc(argc_), argv(argv_), socket(socket_) {}
+
+    void delete_args() {
+        for (size_t i = 0; i < argc; i++)
+            delete [] argv[i];
+        delete [] argv;
+    }
+
+    bool operator==(const Job& other) const { return jid == other.jid; }
+};
+
 using namespace std;
 
 void Server::parse_argv(char** argv) {
@@ -33,7 +52,20 @@ void Server::parse_argv(char** argv) {
     ASSERT_GEQ(thread_pool_sz = atoi(str3.data()), 1);
 }
 
-Server::Server(size_t argc_, char** argv) : concurrency(1){
+void Server::send_job(int sock, Job& job, string prefix, string suffix) {
+
+    string job_id = "job_" + to_string(job.jid);
+    string ret = prefix + "<" + job_id + ",";
+
+    for (size_t i = 0; i < job.argc; i++)
+        ret += string(" ") + job.argv[i];
+    
+    ret += ">" + suffix;
+    
+    send_msg(sock, ret);
+}
+
+Server::Server(size_t argc_, char** argv) : concurrency(1), jids(1) {
     ASSERT_COND(argc_ == 4, "Usage: %s <portNum> <bufferSize> <threadPoolSize>\n", argv[0]);
     parse_argv(argv);
 
@@ -52,6 +84,7 @@ Server::Server(size_t argc_, char** argv) : concurrency(1){
     ASSERT_NEQ(listen(sock, 1 << 8) , -1);
 
     ASSERT_EQ(pthread_mutex_init(&lock, NULL), 0);
+    ASSERT_EQ(pthread_cond_init(&cond, NULL), 0);
 
     // pthread_t worker;
 
@@ -63,6 +96,8 @@ Server::Server(size_t argc_, char** argv) : concurrency(1){
 
 Server::~Server() {
     ASSERT_NEQ(close(sock), -1);
+    ASSERT_EQ(pthread_mutex_destroy(&lock), 0);
+    ASSERT_EQ(pthread_cond_destroy(&cond), 0)
 }
 
 void Server::run() {
@@ -102,10 +137,21 @@ void* Server::handle_command(void* args) {
 
 void Server::issue_job(int sock) {
 
-    // size_t argc;
-    // char** argv = receive_args(sock, &argc);
+    size_t argc;
+    char** argv = receive_args(sock, &argc);
 
-    printf("issue job iou\n");
+    Job job(-1, jids++, argc, argv, sock);
+
+    ASSERT_EQ(pthread_mutex_lock(&lock), 0);
+
+    while (ready_queue.size() == buffer_sz)
+        ASSERT_EQ(pthread_cond_wait(&cond, &lock), 0);
+    
+    ready_queue.push_back(job);
+    ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
+	ASSERT_EQ(pthread_cond_signal(&cond), 0);
+
+    send_job(job.socket, job, "JOB ", " SUBMITTED");
 }
 
 void Server::set_concurrency(int sock) {
@@ -124,15 +170,34 @@ void Server::set_concurrency(int sock) {
 }
 
 void Server::stop_job(int sock) {
+    size_t job_id;
+    socket_read(sock, &job_id, sizeof(job_id));
 
-    // size_t argc;
-    // char** argv = receive_args(sock, &argc);
+    Job dummy(-1, job_id, 0, NULL, 0);
 
-    printf("stop job iou\n");
+    pthread_mutex_lock(&lock);
+    size_t old_sz = ready_queue.size();
+    ready_queue.remove(dummy);
+
+    bool condition = ready_queue.size() < old_sz;
+    pthread_mutex_unlock(&lock);
+
+    string ret = "JOB <job_" + to_string(job_id) + "> ";
+    ret += (condition) ? "REMOVED" : "NOT FOUND";
+
+    send_msg(sock, ret); 
 }
 
 void Server::poll(int sock) {
-    printf("poll iou\n");
+    pthread_mutex_lock(&lock);
+
+    size_t queue_sz = ready_queue.size();
+    socket_write(sock, &queue_sz, sizeof(queue_sz));
+
+    for (auto job : ready_queue)
+        send_job(sock, job);
+    
+    pthread_mutex_unlock(&lock);
 }
 
 void Server::exit(int sock) {    

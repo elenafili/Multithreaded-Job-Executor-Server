@@ -93,44 +93,26 @@ void Commander::communicate(char** argv) {
 }
 
 void Commander::issue_job() {
-    // send_args(sock, argc, argv);
-    // receive_job(); 
+    send_args(sock, argc, argv);
+    cout << receive_msg(sock) << endl;
 }
 
 void Commander::set_concurrency() {
     socket_write(sock, &number, sizeof(number));
-
-    size_t len;
-    socket_read(sock, &len, sizeof(len));
-     
-    char* msg = new char[len];
-    socket_read(sock, msg, len);
-    printf("%s\n", msg);
-
-    delete [] msg;  
+    cout << receive_msg(sock) << endl;
 }
 
 void Commander::stop_job() {
-    // size_t size;
-    // fd_read(fdr, &size, sizeof(size)); // Size of job_XX removed/terminated
-
-    // char* msg = new char[size];
-    // fd_read(fdr, msg, size); // job_XX removed/terminated
-
-    // printf("%s\n", msg);
-
-    // delete [] msg;
+    socket_write(sock, &number, sizeof(number));
+    cout << receive_msg(sock) << endl;
 }
 
 void Commander::poll() {
+    size_t queue_sz;
+    socket_read(sock, &queue_sz, sizeof(queue_sz));
 
-    // printf("%s\n", type == POLL_QUEUED ? "+-----------+\n|Queued Jobs|\n+-----------+" : "+------------+\n|Running Jobs|\n+------------+");
-
-    // size_t size;
-    // fd_read(fdr, &size, sizeof(size)); // Nuber of jobs
-
-    // for (size_t i = 0; i < size; i++)
-    //     receive_job();    
+    for (size_t i = 0; i < queue_sz; i++)
+        cout << receive_msg(sock) << endl;
 }
 
 void Commander::exit() {    

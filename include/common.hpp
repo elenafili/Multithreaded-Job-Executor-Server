@@ -42,5 +42,8 @@ bool check_num(std::string str);
 void socket_read(int sock, void* address, int size);
 void socket_write(int sock, void* address, int size);
 
+void send_msg(int sock, std::string msg);
+std::string receive_msg(int sock);
+
 void send_args(int sock, size_t argc, char** argv);
 char** receive_args(int sock, size_t* argc);
