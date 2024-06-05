@@ -75,7 +75,7 @@ Commander::~Commander() {
     ASSERT_NEQ(close(sock), -1);
 }
 
-void Commander::communicate(char** argv) {
+void Commander::communicate() {
     ASSERT_NEQ(connect(sock, (struct sockaddr*) &server, sizeof(server)), -1);
 
     socket_write(sock, &type, sizeof(type));
@@ -94,7 +94,20 @@ void Commander::communicate(char** argv) {
 
 void Commander::issue_job() {
     send_args(sock, argc, argv);
-    cout << receive_msg(sock) << endl;
+
+    while (1) {
+        size_t len;
+        socket_read(sock, &len, sizeof(len));
+
+        if (len == 0)
+            break;
+
+        char* str = new char[len];
+        socket_read(sock, str, len);
+
+        cout << str;
+        delete [] str;
+    }
 }
 
 void Commander::set_concurrency() {

@@ -4,10 +4,22 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <unistd.h>
+#include<fcntl.h> 
 #include <ctype.h>
 #include <cstring>
+#include <algorithm>
+// #include <format>
 #include "common.hpp"
 #include "server.hpp"
+
+#define BUFFER_SIZE 256
+
+#define DASHES "-----"
+#define WRAP(x) (DASHES + string(x) + DASHES + "\n")
+#define JOB_(job) ("job_" + to_string(job.jid))
+#define JOB(job) ("<" + JOB_(job) + ", " + string(args_concat(job)) + ">")
+
+using namespace std;
 
 struct ControllerArgs {
     Server* server;
@@ -33,16 +45,23 @@ struct Job {
     }
 
     bool operator==(const Job& other) const { return jid == other.jid; }
+    bool operator==(const size_t& other) const { return jid == other; }
 };
 
-using namespace std;
+static string args_concat(Job& job) {
+    string ret(job.argv[0]);
+    
+    for (size_t i = 1; i < job.argc; i++)
+        ret += string(" ") + job.argv[i];
+
+    return ret;    
+}
 
 void Server::parse_argv(char** argv) {
     string str1(argv[1]);
     ASSERT_COND(check_num(str1), "'%s' is not a natural number!\n", argv[1]);
+    ASSERT_GEQ(port = atoi(str1.data()), 1);
     
-    port = atoi(str1.data());
-
     string str2(argv[2]);
     ASSERT_COND(check_num(str2), "'%s' is not a natural number!\n", argv[2]); 
     ASSERT_GEQ(buffer_sz = atoi(str2.data()), 1);
@@ -52,20 +71,77 @@ void Server::parse_argv(char** argv) {
     ASSERT_GEQ(thread_pool_sz = atoi(str3.data()), 1);
 }
 
-void Server::send_job(int sock, Job& job, string prefix, string suffix) {
+Job Server::pop() {
+    ASSERT_EQ(pthread_mutex_lock(&lock), 0);
 
-    string job_id = "job_" + to_string(job.jid);
-    string ret = prefix + "<" + job_id + ",";
+    while (running == concurrency || ready_queue.size() == 0)
+        ASSERT_EQ(pthread_cond_wait(&cond_full, &lock), 0);
 
-    for (size_t i = 0; i < job.argc; i++)
-        ret += string(" ") + job.argv[i];
-    
-    ret += ">" + suffix;
-    
-    send_msg(sock, ret);
+    Job job = ready_queue.front();
+    ready_queue.pop_front();
+    running++;
+
+    ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
+	ASSERT_EQ(pthread_cond_signal(&cond_empty), 0);
+
+    return job;
 }
 
-Server::Server(size_t argc_, char** argv) : concurrency(1), jids(1) {
+void* Server::worker(void* args) {
+    Server* server = (Server*) args;
+
+    while(1) {
+        Job job = server->pop();
+        server->exec_job(job);
+    }
+}
+
+void Server::exec_job(Job& job) {
+    int child_pid;
+    ASSERT_NEQ(child_pid = fork(), -1);
+
+    if (child_pid == 0) {
+        string name = "output/" + to_string(getpid()) + ".output";
+    
+        int fd;
+        ASSERT_NEQ(fd = open(name.data(), O_WRONLY | O_CREAT, 0644), -1);
+        ASSERT_NEQ(dup2(fd, STDOUT_FILENO), -1);
+
+        ASSERT_NEQ(execvp(job.argv[0], job.argv), -1);
+    } 
+    else {
+        job.pid = child_pid;
+        int status;
+        do {
+            ASSERT_NEQ(waitpid(child_pid, &status, 0), -1);
+        } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+        
+        running--;
+
+        string name = "output/" + to_string(child_pid) + ".output";
+        FILE* file = fopen(name.data(), "r");
+
+        send_msg(job.socket, WRAP(JOB_(job) + " output start"));
+
+        char buffer[BUFFER_SIZE + 1];
+        size_t bytes = 0;
+
+        while ( (bytes = fread(buffer, sizeof(char), BUFFER_SIZE, file)) > 0) {
+            buffer[bytes] = 0;
+            send_msg(job.socket, buffer);
+        }
+
+        send_msg(job.socket, WRAP(JOB_(job) + " output end"));
+
+        size_t num = 0;
+        socket_write(job.socket, &num, sizeof(num));
+
+        ASSERT_EQ(fclose(file), 0);
+        ASSERT_NEQ(close(job.socket), -1);
+    }
+}
+
+Server::Server(size_t argc_, char** argv) : concurrency(1), running(0), jids(1) {
     ASSERT_COND(argc_ == 4, "Usage: %s <portNum> <bufferSize> <threadPoolSize>\n", argv[0]);
     parse_argv(argv);
 
@@ -84,20 +160,22 @@ Server::Server(size_t argc_, char** argv) : concurrency(1), jids(1) {
     ASSERT_NEQ(listen(sock, 1 << 8) , -1);
 
     ASSERT_EQ(pthread_mutex_init(&lock, NULL), 0);
-    ASSERT_EQ(pthread_cond_init(&cond, NULL), 0);
+    ASSERT_EQ(pthread_cond_init(&cond_full, NULL), 0);
+    ASSERT_EQ(pthread_cond_init(&cond_empty, NULL), 0);
 
-    // pthread_t worker;
+    pthread_t* worker_tids = new pthread_t[thread_pool_sz];
 
-    // for (size_t i = 0; i < thread_pool_sz; i++) {
-    //     ASSERT_EQ(pthread_create(&worker, NULL, connection_handler , &conn_desc), 0);
-    // }
-
+    for (size_t i = 0; i < thread_pool_sz; i++) {
+        ASSERT_EQ(pthread_create(&(worker_tids[i]), NULL, worker, this), 0);
+    }
 }
 
+// WORKER TIDS join + delete + destroy files
 Server::~Server() {
     ASSERT_NEQ(close(sock), -1);
     ASSERT_EQ(pthread_mutex_destroy(&lock), 0);
-    ASSERT_EQ(pthread_cond_destroy(&cond), 0)
+    ASSERT_EQ(pthread_cond_destroy(&cond_full), 0);
+    ASSERT_EQ(pthread_cond_destroy(&cond_empty), 0);
 }
 
 void Server::run() {
@@ -129,7 +207,8 @@ void* Server::handle_command(void* args) {
     else 
         cargs->server->exit(cargs->socket);
 
-    ASSERT_NEQ(close(cargs->socket), -1);
+    if (type != ISSUE_JOB)
+        ASSERT_NEQ(close(cargs->socket), -1);
     delete cargs;
 
     return NULL;
@@ -145,13 +224,15 @@ void Server::issue_job(int sock) {
     ASSERT_EQ(pthread_mutex_lock(&lock), 0);
 
     while (ready_queue.size() == buffer_sz)
-        ASSERT_EQ(pthread_cond_wait(&cond, &lock), 0);
-    
+        ASSERT_EQ(pthread_cond_wait(&cond_empty, &lock), 0);
+   
     ready_queue.push_back(job);
     ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
-	ASSERT_EQ(pthread_cond_signal(&cond), 0);
 
-    send_job(job.socket, job, "JOB ", " SUBMITTED");
+    send_msg(job.socket, "JOB " + JOB(job) + " SUBMITTED\n");
+	// send_msg(job.socket, format("JOB <job_{}, {}> SUBMITTED\n", job.jid, args_concat(job));
+    ASSERT_EQ(pthread_cond_signal(&cond_full), 0);
+
 }
 
 void Server::set_concurrency(int sock) {
@@ -176,16 +257,29 @@ void Server::stop_job(int sock) {
     Job dummy(-1, job_id, 0, NULL, 0);
 
     pthread_mutex_lock(&lock);
-    size_t old_sz = ready_queue.size();
-    ready_queue.remove(dummy);
+    auto it = find(ready_queue.begin(), ready_queue.end(), (size_t)job_id);
+    int job_sock = -1;
 
-    bool condition = ready_queue.size() < old_sz;
+    if (it != ready_queue.end()) {
+        job_sock = (*it).socket;
+        (*it).delete_args();
+    }
+
+    ready_queue.remove(dummy);
     pthread_mutex_unlock(&lock);
 
-    string ret = "JOB <job_" + to_string(job_id) + "> ";
-    ret += (condition) ? "REMOVED" : "NOT FOUND";
+    string ret = "JOB <" + JOB_(dummy) + "> ";
+    ret += (job_sock != -1) ? "REMOVED" : "NOT FOUND";
 
-    send_msg(sock, ret); 
+    send_msg(sock, ret);
+
+    if (job_sock > 0) {
+        string term_msg = "JOB <" + JOB_(dummy) + "> WAS TERMINATED\n";
+        send_msg(job_sock, term_msg);
+
+        size_t num = 0;
+        socket_write(job_sock, &num, sizeof(num));
+    }
 }
 
 void Server::poll(int sock) {
@@ -195,7 +289,7 @@ void Server::poll(int sock) {
     socket_write(sock, &queue_sz, sizeof(queue_sz));
 
     for (auto job : ready_queue)
-        send_job(sock, job);
+        send_msg(sock, JOB(job));
     
     pthread_mutex_unlock(&lock);
 }

@@ -21,5 +21,5 @@ class Commander {
     public:
         Commander(size_t argc_, char** argv);
         ~Commander();
-        void communicate(char** argv);
+        void communicate();
 };
