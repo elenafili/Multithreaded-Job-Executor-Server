@@ -1,7 +1,3 @@
-#include <iostream>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <unistd.h>
 #include <netdb.h>
 #include <cstring>
@@ -10,7 +6,6 @@
 using namespace std;
 
 void Commander::parse_argv(char** argv) {
-
     string type_(argv[3]);
 
     if (type_ == "issueJob") {
@@ -48,7 +43,6 @@ void Commander::parse_argv(char** argv) {
         printf("Commands available: 'issueJob', 'setConcurrency', 'stop', 'poll', 'exit'\n");
         std::exit(0);
     }
-
 }
 
 Commander::Commander(size_t argc_, char** argv) : argc(argc_ - 4), number(0) {
@@ -58,7 +52,7 @@ Commander::Commander(size_t argc_, char** argv) : argc(argc_ - 4), number(0) {
 
     ASSERT_NEQ(sock = socket(AF_INET, SOCK_STREAM, 0), -1);
 
-    struct hostent *rem;
+    struct hostent* rem;
     ASSERT_NEQ(rem = gethostbyname(argv[1]), NULL);
 
     server.sin_family = AF_INET;
@@ -77,6 +71,18 @@ Commander::~Commander() {
 
 void Commander::communicate() {
     ASSERT_NEQ(connect(sock, (struct sockaddr*) &server, sizeof(server)), -1);
+
+    int temp;
+    int accepted = read(sock, &temp, sizeof(temp));
+
+    if (accepted < 0) {
+        perror("read()");
+        std::exit(EXIT_FAILURE);
+    }
+    else if (accepted == 0) {
+        printf("SERVER TERMINATED BEFORE EXECUTION\n");
+        return;
+    }
 
     socket_write(sock, &type, sizeof(type));
 
@@ -128,14 +134,6 @@ void Commander::poll() {
         cout << receive_msg(sock) << endl;
 }
 
-void Commander::exit() {    
-    // char msg[sizeof(TERMINATION_MSG)];
-    // fd_read(fdr, msg, sizeof(TERMINATION_MSG));
-
-    // if (string(msg) != TERMINATION_MSG) {
-    //     printf("Termination message received from server was corrupted!\n");
-    //     std::exit(EXIT_FAILURE);
-    // }
-
-    // printf("%s\n", TERMINATION_MSG);
+void Commander::exit() {
+    cout << receive_msg(sock) << endl;
 }

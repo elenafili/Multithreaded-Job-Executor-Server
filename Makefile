@@ -6,43 +6,45 @@ INCLUDE := ./include
 
 COMMON       := ./src/common
 COMMON_SRCS  := $(wildcard $(COMMON)/*.cpp)
-COMMON_OBJS  := $(subst .cpp,.o,$(COMMON_SRCS))
+COMMON_OBJS  := $(patsubst $(COMMON)/%.cpp,./build/%.o,$(COMMON_SRCS))
 
 
-SERVER		 := ./src/server
-SERVER_SRCS  := $(wildcard $(SERVER)/*.cpp) $(COMMON_SRCS)
-SERVER_OBJS  := $(subst .cpp,.o,$(SERVER_SRCS))
+SERVER         := ./src/server
+SERVER_SRCS  := $(wildcard $(SERVER)/*.cpp)
+SERVER_OBJS  := $(patsubst $(SERVER)/%.cpp,./build/%.o,$(SERVER_SRCS)) $(COMMON_OBJS)
 
 
-COMMANDER		:= ./src/commander
-COMMANDER_SRCS  := $(wildcard $(COMMANDER)/*.cpp) $(COMMON_SRCS)
-COMMANDER_OBJS  := $(subst .cpp,.o,$(COMMANDER_SRCS))
+COMMANDER        := ./src/commander
+COMMANDER_SRCS  := $(wildcard $(COMMANDER)/*.cpp)
+COMMANDER_OBJS  := $(patsubst $(COMMANDER)/%.cpp,./build/%.o,$(COMMANDER_SRCS)) $(COMMON_OBJS)
 
 
 TARGET   := $(word 1, $(MAKECMDGOALS))
-CXXFLAGS := -std=gnu++17 -g3 -Wall -Wextra 
+CXXFLAGS := -std=gnu++17 -g3 -Wall -Wextra -I$(INCLUDE)
 
-# Compile options
-CXXFLAGS += -I$(INCLUDE)
 
-%.o: %.cpp
+./build/%.o: $(COMMON)/%.cpp
+	$(CC) $(CXXFLAGS) -c $^ -o $@
+
+./build/%.o: $(SERVER)/%.cpp
+	$(CC) $(CXXFLAGS) -c $^ -o $@
+
+./build/%.o: $(COMMANDER)/%.cpp
 	$(CC) $(CXXFLAGS) -c $^ -o $@
 
 clean:
 	@rm -f $(COMMON_OBJS) $(SERVER_OBJS) $(COMMANDER_OBJS)
-	@rm -f ./jobExecutorServer ./jobCommander ./progDelay
+	@rm -f ./bin/jobExecutorServer ./bin/jobCommander ./bin/progDelay
 
 server: $(SERVER_OBJS)
-	@rm -f ./jobExecutorServer.txt
-	$(CC) $^ -o ./jobExecutorServer
+	$(CC) $^ -o ./bin/jobExecutorServer
 
 commander: $(COMMANDER_OBJS)
-	@rm -f ./jobExecutorServer.txt
-	$(CC) $^ -o ./jobCommander
+	$(CC) $^ -o ./bin/jobCommander
 
 all: 
-	make -s server
-	make -s commander
+	@make -s server
+	@make -s commander
 #@gcc ./scripting/test_cases/progDelay.c -o progDelay
 
 test_cases:
