@@ -43,7 +43,7 @@ struct Job {
     bool operator==(const size_t& other) const { return jid == other; }
 };
 
-typedef void (*Handler)(int);
+typedef void (*Handler)(int);                         
 
 
 // +----------------------+
@@ -69,6 +69,7 @@ static void set_handler(int signum, Handler handler) {
     ASSERT_NEQ(sigaction(signum, &sa, NULL), -1);
 }
 
+// Concatenate the command line arguments of a job into a string and return it
 static string args_concat(Job& job) {
     string ret(job.argv[0]);
     
@@ -83,6 +84,7 @@ static string args_concat(Job& job) {
 // |   Server   |
 // +------------+
 
+// Assert correctness of command line arguments given to the server
 void Server::parse_argv(char** argv) {
     string str1(argv[1]);
     ASSERT_COND(check_num(str1), "'%s' is not a natural number!\n", argv[1]);
@@ -104,6 +106,7 @@ Server::Server(size_t argc_, char** argv)
     ASSERT_COND(argc_ == 4, "Usage: %s <portNum> <bufferSize> <threadPoolSize>\n", argv[0]);
     parse_argv(argv);
 
+    // SOCK_CLOEXEC is used to not leak fds when fork & exec-ing
     ASSERT_NEQ(public_sock = sock = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0), -1);
 
     int temp = 1;
@@ -118,6 +121,7 @@ Server::Server(size_t argc_, char** argv)
     ASSERT_NEQ(bind(sock, (struct sockaddr*) &server, sizeof(server)), -1)
     ASSERT_NEQ(listen(sock, 1 << 8) , -1);
 
+    // Initialize mutex and condition variables
     ASSERT_EQ(pthread_mutex_init(&lock, NULL), 0);
     ASSERT_EQ(pthread_cond_init(&cond_full, NULL), 0);
     ASSERT_EQ(pthread_cond_init(&cond_empty, NULL), 0);
@@ -126,6 +130,7 @@ Server::Server(size_t argc_, char** argv)
 
     worker_tids = new pthread_t[thread_pool_sz];
 
+    // Spawn worker threads
     for (size_t i = 0; i < thread_pool_sz; i++)
         ASSERT_EQ(pthread_create(&(worker_tids[i]), NULL, worker, this), 0);
 }
@@ -147,8 +152,11 @@ void Server::run() {
     int private_sock;
 
     while(1) {
+        // SOCK_CLOEXEC is used to not leak fds when fork & exec-ing
         ASSERT_NEQ(private_sock = accept4(sock, NULL, NULL, SOCK_CLOEXEC), -1 && stop_server == false);
 
+        // Handle edge case: accept4 succeeds, but before the second condition is checked, 
+        //                   SIGUSR1 is caught and the value of stop_server becomes true 
         if (private_sock == -1 && stop_server)
             break;
         
@@ -156,24 +164,33 @@ void Server::run() {
         active_controllers++;
         ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
 
+        // Spawn controller
         pthread_t controller;
         ASSERT_EQ(pthread_create(&controller, NULL, handle_command, new ControllerArgs(this, private_sock)), 0);
     }
 
     ASSERT_EQ(pthread_mutex_lock(&lock), 0);
 
+    // Unblock any controller/worker that is waiting
     ASSERT_EQ(pthread_cond_broadcast(&cond_full), 0);
     ASSERT_EQ(pthread_cond_broadcast(&cond_empty), 0);
 
+    // Terminate jobs that are waiting in the ready queue
     for (auto& job : ready_queue) {
-        send_msg(job.socket, "SERVER TERMINATED BEFORE EXECUTION\n");
-        SEND_EOF(job.socket);
+
+        TRY_CATCH(
+            send_msg(job.socket, "SERVER TERMINATED BEFORE EXECUTION\n");
+            SEND_EOF(job.socket);, 
+        )
 
         job.delete_args();
+        
+        ASSERT_NEQ(shutdown(job.socket, SHUT_WR), -1 && errno != ENOTCONN);
         ASSERT_NEQ(close(job.socket), -1);
     }
     ready_queue.clear();
 
+    // Wait for the execution of all workers and controller to finish before exiting 
     while (active_workers > 0)
         ASSERT_EQ(pthread_cond_wait(&cond_workers, &lock), 0);    
 
@@ -194,30 +211,32 @@ void* Server::handle_command(void* args) {
     ControllerArgs* cargs = (ControllerArgs*) args;
     Server* server = cargs->server;
     int sock = cargs->socket;
+    TRY_CATCH(
+        CommandType type;
+        socket_read(sock, &type, sizeof(type));
 
-    int temp = 0;
-    socket_write(sock, &temp, sizeof(temp));
+        if (type == ISSUE_JOB)
+            server->issue_job(sock);
+        else if (type == SET_CONCURRENCY)
+            server->set_concurrency(sock);
+        else if (type == STOP_JOB)
+            server->stop_job(sock);
+        else if (type == POLL)
+            server->poll(sock);
+        else 
+            server->exit(sock);
 
-    CommandType type;
-    socket_read(sock, &type, sizeof(type));
-
-    if (type == ISSUE_JOB)
-        server->issue_job(sock);
-    else if (type == SET_CONCURRENCY)
-        server->set_concurrency(sock);
-    else if (type == STOP_JOB)
-        server->stop_job(sock);
-    else if (type == POLL)
-        server->poll(sock);
-    else 
-        server->exit(sock);
-
-    if (type != ISSUE_JOB)
-        ASSERT_NEQ(close(sock), -1);
+        if (type != ISSUE_JOB) {
+            ASSERT_NEQ(shutdown(sock, SHUT_WR), -1 && errno != ENOTCONN);
+            ASSERT_NEQ(close(sock), -1);
+        }
+        ,
+    )
     
     ASSERT_EQ(pthread_mutex_lock(&server->lock), 0);
     server->active_controllers--;
-    ASSERT_EQ(pthread_cond_signal(&server->cond_controllers), 0);
+    if (server->active_controllers == 0)
+        ASSERT_EQ(pthread_cond_signal(&server->cond_controllers), 0);
     ASSERT_EQ(pthread_mutex_unlock(&server->lock), 0);
 
     delete cargs;
@@ -236,6 +255,9 @@ void Server::issue_job(int sock) {
     while (ready_queue.size() == buffer_sz && flag == false)
         ASSERT_EQ(pthread_cond_wait(&cond_empty, &lock), 0);
     
+    string job_desc(JOB(job));
+
+    // Check if server is in termination state
     if (flag == false)
         ready_queue.push_back(job);
     else
@@ -243,8 +265,17 @@ void Server::issue_job(int sock) {
 
     ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
 
-    send_msg(job.socket, "JOB " + JOB(job) + (flag ? " NOT" : "") + " SUBMITTED\n");
-    ASSERT_EQ(pthread_cond_signal(&cond_full), 0);
+    TRY_CATCH(
+        send_msg(job.socket, "JOB " + job_desc + (flag ? " NOT" : "") + " SUBMITTED\n");
+        ASSERT_EQ(pthread_cond_signal(&cond_full), 0);,
+
+        ASSERT_EQ(pthread_mutex_lock(&lock), 0);
+        job.delete_args();
+        ready_queue.remove(job);
+        ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
+        ASSERT_NEQ(shutdown(job.socket, SHUT_WR), -1 && errno != ENOTCONN);
+        ASSERT_NEQ(close(job.socket), -1);
+    )
 }
 
 void Server::set_concurrency(int sock) {
@@ -254,6 +285,7 @@ void Server::set_concurrency(int sock) {
     ASSERT_EQ(pthread_mutex_lock(&lock), 0);
     concurrency = concurrency_;
     ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
+    // Signal worker threads to check if there are any jobs that can be executed with the new concurrency level
     ASSERT_EQ(pthread_cond_broadcast(&cond_full), 0);
 
     send_msg(sock, "CONCURRENCY SET AT " + to_string(concurrency_));
@@ -274,32 +306,38 @@ void Server::stop_job(int sock) {
         (*it).delete_args();
     }
 
+    // Removes only if found
     ready_queue.remove(dummy);
     ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
 
+    // Reply to issuing commander
+    if (job_sock > 0) {
+        TRY_CATCH(
+            send_msg(job_sock, "JOB <" + JOB_(dummy) + "> WAS TERMINATED\n");
+            SEND_EOF(job_sock);,
+        )
+        ASSERT_NEQ(shutdown(job_sock, SHUT_WR), -1 && errno != ENOTCONN);
+        ASSERT_NEQ(close(job_sock), -1);
+    }
+    
     string ret = "JOB <" + JOB_(dummy) + "> ";
     ret += (job_sock != -1) ? "REMOVED" : "NOT FOUND";
 
     send_msg(sock, ret);
-
-    if (job_sock > 0) {
-        send_msg(job_sock, "JOB <" + JOB_(dummy) + "> WAS TERMINATED\n");
-        SEND_EOF(job_sock); 
-
-        ASSERT_NEQ(close(job_sock), -1);
-    }
 }
 
 void Server::poll(int sock) {
     ASSERT_EQ(pthread_mutex_lock(&lock), 0);
 
-    size_t queue_sz = ready_queue.size();
-    socket_write(sock, &queue_sz, sizeof(queue_sz));
+    TRY_CATCH(
+        size_t queue_sz = ready_queue.size();
+        socket_write(sock, &queue_sz, sizeof(queue_sz));
 
-    for (auto job : ready_queue)
-        send_msg(sock, JOB(job));
-    
-    ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
+        for (auto job : ready_queue)
+            send_msg(sock, JOB(job));,
+    )
+
+    ASSERT_EQ(pthread_mutex_unlock(&lock), 0);    
 }
 
 void Server::exit(int sock) {
@@ -362,8 +400,11 @@ void Server::exec_job(Job& job) {
         string name = "out/" + to_string(getpid()) + ".output";
     
         int fd;
+        // O_CLOEXEC is used to not leak fds when exec-ing
         ASSERT_NEQ(fd = open(name.data(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644), -1);
+        
         ASSERT_NEQ(dup2(fd, STDOUT_FILENO), -1);
+        ASSERT_NEQ(dup2(fd, STDERR_FILENO), -1);
 
         ASSERT_NEQ(execvp(job.argv[0], job.argv), -1);
     } 
@@ -374,32 +415,38 @@ void Server::exec_job(Job& job) {
         } while (!WIFEXITED(status) && !WIFSIGNALED(status));
 
         string name = "out/" + to_string(child_pid) + ".output";
-        FILE* file;
-        ASSERT_NEQ(file = fopen(name.data(), "r"), NULL);
+        int fd;
+        
+        // O_CLOEXEC is used to not leak fds when fork & exec-ing
+        ASSERT_NEQ(fd = open(name.data(), O_RDONLY | O_CLOEXEC, 0644), -1);
 
-        send_msg(job.socket, WRAP(JOB_(job) + " output start"));
+        try {
+            send_msg(job.socket, WRAP(JOB_(job) + " output start"));
 
-        char buffer[BUFFER_SIZE + 1];
-        size_t bytes = 0;
+            char buffer[BUFFER_SIZE + 1];
+            size_t bytes = 0;
 
-        while ( (bytes = fread(buffer, sizeof(char), BUFFER_SIZE, file)) > 0) {
-            buffer[bytes] = 0;
-            send_msg(job.socket, buffer);
-        }
+            // Send the file in smaller chunks
+            while ( (bytes = read(fd, buffer, BUFFER_SIZE)) > 0) {
+                buffer[bytes] = 0;
+                send_msg(job.socket, buffer);
+            }
 
-        send_msg(job.socket, WRAP(JOB_(job) + " output end"));
+            send_msg(job.socket, WRAP(JOB_(job) + " output end"));
+            SEND_EOF(job.socket);
+        } catch (Exception& e) { }
 
-        SEND_EOF(job.socket); 
-
-        ASSERT_EQ(fclose(file), 0);
+        ASSERT_EQ(close(fd), 0);
         ASSERT_EQ(remove(name.data()), 0);
+        ASSERT_NEQ(shutdown(job.socket, SHUT_WR), -1 && errno != ENOTCONN);
         ASSERT_NEQ(close(job.socket), -1);
 
         job.delete_args();
         
         ASSERT_EQ(pthread_mutex_lock(&lock), 0);
         active_workers--;
-        ASSERT_EQ(pthread_cond_signal(&cond_workers), 0);
+        if (active_workers == 0)
+            ASSERT_EQ(pthread_cond_signal(&cond_workers), 0);
         ASSERT_EQ(pthread_mutex_unlock(&lock), 0);
     }
 }

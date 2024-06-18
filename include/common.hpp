@@ -1,5 +1,6 @@
 #pragma once
 #include <iostream>
+#include <unistd.h>
 
 #define ASSERT_COND(cond, ...) {    \
     if (!(cond)) {                  \
@@ -29,6 +30,8 @@
     }                               \
 }
 
+#define TRY_CATCH(x, y) { try { x } catch (Exception& e) { y } }     
+
 typedef enum {
     ISSUE_JOB,
     SET_CONCURRENCY,
@@ -36,6 +39,16 @@ typedef enum {
     POLL,
     EXIT,
 } CommandType;
+
+class Exception : public std::exception
+{
+	private:
+		const std::string msg;
+
+    public:
+        Exception(const std::string& msg_);
+        virtual const char* what() const throw ();
+};
 
 bool check_num(std::string str);
 

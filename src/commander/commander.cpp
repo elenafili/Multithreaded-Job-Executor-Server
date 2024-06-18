@@ -1,10 +1,12 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <cstring>
+#include <signal.h>
 #include "commander.hpp"
 
 using namespace std;
 
+// Assert correctness of command line arguments given to the commander
 void Commander::parse_argv(char** argv) {
     string type_(argv[3]);
 
@@ -40,7 +42,7 @@ void Commander::parse_argv(char** argv) {
         ASSERT_COND(argc == 0, "Usage: %s <serverName> <portNum> exit\n", argv[0]);
     }
     else {
-        printf("Commands available: 'issueJob', 'setConcurrency', 'stop', 'poll', 'exit'\n");
+        cout << "Commands available: 'issueJob', 'setConcurrency', 'stop', 'poll', 'exit'" << endl;
         std::exit(0);
     }
 }
@@ -50,6 +52,7 @@ Commander::Commander(size_t argc_, char** argv) : argc(argc_ - 4), number(0) {
 
     parse_argv(argv);
 
+    // Setup the socket which will be used to connect to the server
     ASSERT_NEQ(sock = socket(AF_INET, SOCK_STREAM, 0), -1);
 
     struct hostent* rem;
@@ -66,36 +69,30 @@ Commander::Commander(size_t argc_, char** argv) : argc(argc_ - 4), number(0) {
 }
 
 Commander::~Commander() {
+    ASSERT_NEQ(shutdown(sock, SHUT_WR), -1 && errno != ENOTCONN);
     ASSERT_NEQ(close(sock), -1);
 }
 
 void Commander::communicate() {
     ASSERT_NEQ(connect(sock, (struct sockaddr*) &server, sizeof(server)), -1);
 
-    int temp;
-    int accepted = read(sock, &temp, sizeof(temp));
+    TRY_CATCH(
+        // Send the type of command
+        socket_write(sock, &type, sizeof(type));
 
-    if (accepted < 0) {
-        perror("read()");
-        std::exit(EXIT_FAILURE);
-    }
-    else if (accepted == 0) {
-        printf("SERVER TERMINATED BEFORE EXECUTION\n");
-        return;
-    }
-
-    socket_write(sock, &type, sizeof(type));
-
-    if (type == ISSUE_JOB)
-        issue_job();
-    else if (type == SET_CONCURRENCY)
-        set_concurrency();
-    else if (type == STOP_JOB)
-        stop_job();
-    else if (type == POLL)
-        poll();
-    else if (type == EXIT)
-        this->exit();
+        if (type == ISSUE_JOB)
+            issue_job();
+        else if (type == SET_CONCURRENCY)
+            set_concurrency();
+        else if (type == STOP_JOB)
+            stop_job();
+        else if (type == POLL)
+            poll();
+        else if (type == EXIT)
+            this->exit();
+        ,
+        cout << "Connection to the server was unexpectedly terminated!" << endl;
+    )
 }
 
 void Commander::issue_job() {
@@ -109,10 +106,11 @@ void Commander::issue_job() {
             break;
 
         char* str = new char[len];
-        socket_read(sock, str, len);
-
-        cout << str;
-        delete [] str;
+        TRY_CATCH(
+            socket_read(sock, str, len);
+            cout << str << flush;,
+        )
+        delete [] str;        
     }
 }
 

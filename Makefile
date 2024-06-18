@@ -20,37 +20,51 @@ COMMANDER_OBJS  := $(patsubst $(COMMANDER)/%.cpp,./build/%.o,$(COMMANDER_SRCS)) 
 
 
 TARGET   := $(word 1, $(MAKECMDGOALS))
-CXXFLAGS := -std=gnu++17 -g3 -Wall -Wextra -I$(INCLUDE)
+CXXFLAGS := -std=gnu++17 -g3 -Wall -Wextra -I$(INCLUDE) -pthread
 
 
-./build/%.o: $(COMMON)/%.cpp
-	$(CC) $(CXXFLAGS) -c $^ -o $@
-
-./build/%.o: $(SERVER)/%.cpp
-	$(CC) $(CXXFLAGS) -c $^ -o $@
-
-./build/%.o: $(COMMANDER)/%.cpp
-	$(CC) $(CXXFLAGS) -c $^ -o $@
-
-clean:
-	@rm -f $(COMMON_OBJS) $(SERVER_OBJS) $(COMMANDER_OBJS)
-	@rm -f ./bin/jobExecutorServer ./bin/jobCommander ./bin/progDelay
-
-server: $(SERVER_OBJS)
-	$(CC) $^ -o ./bin/jobExecutorServer
-
-commander: $(COMMANDER_OBJS)
-	$(CC) $^ -o ./bin/jobCommander
-
-all: 
+all: dirs
 	@make -s server
 	@make -s commander
-#@gcc ./scripting/test_cases/progDelay.c -o progDelay
+	@gcc ./tests/progDelay.c -o ./bin/progDelay
+
+dirs:
+	@mkdir -p bin
+	@mkdir -p build
+	@mkdir -p out
+	
+./build/%.o: $(COMMON)/%.cpp
+	$(CC) $(CXXFLAGS) -c $^ -o $@ -pthread
+
+./build/%.o: $(SERVER)/%.cpp
+	$(CC) $(CXXFLAGS) -c $^ -o $@ -pthread
+
+./build/%.o: $(COMMANDER)/%.cpp
+	$(CC) $(CXXFLAGS) -c $^ -o $@ -pthread
+
+clean:
+	@rm -rf ./bin/ ./build/
+
+server: dirs $(SERVER_OBJS)
+	$(CC) $(SERVER_OBJS) -o ./bin/jobExecutorServer -pthread
+
+commander: dirs $(COMMANDER_OBJS)
+	$(CC) $(COMMANDER_OBJS) -o ./bin/jobCommander
+
+
+IP ?= linux01.di.uoa.gr
+PORT_PREFIX ?= 123
+BUFFER_SIZE ?= 8
+THREAD_POOL_SIZE ?= 4
+USERNAME ?= sdi2100203
+
+ssh_setup:
+	-ssh-keygen || true
+	ssh-copy-id $(USERNAME)@$(IP)
 
 test_cases:
-	@chmod u+x ./scripting/test_cases/scripts/custom/give_perms.sh
-	@./scripting/test_cases/scripts/custom/give_perms.sh
-	@make -s all > /dev/null 2>&1
-	./scripting/test_cases/scripts/custom/run_given.sh
-	./scripting/test_cases/scripts/custom/test.sh
-	@make clean > /dev/null 2>&1
+	@chmod u+x ./tests/scripts/custom/give_perms.sh
+	@./tests/scripts/custom/give_perms.sh
+	@./tests/scripts/custom/run_given.sh $(IP) $(PORT_PREFIX) $(BUFFER_SIZE) $(THREAD_POOL_SIZE)
+	@echo Running: test.sh
+	@-./tests/scripts/custom/test.sh $(IP) $(PORT_PREFIX) $(BUFFER_SIZE) $(THREAD_POOL_SIZE) > ./tests/results/results_test.txt 2>&1 || true

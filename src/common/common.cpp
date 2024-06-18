@@ -1,8 +1,15 @@
 #include <unistd.h>
 #include <cstring>
+#include <sys/socket.h>
+
 #include "common.hpp"
 
 using namespace std;
+
+
+
+Exception::Exception(const string& msg_) : msg(msg_) { }
+const char* Exception::what() const throw () { return msg.data(); }
 
 bool check_num(string str) {
     for (char c : str) {
@@ -12,12 +19,17 @@ bool check_num(string str) {
     return true;
 }
 
+// We designed the communication protocol in such a way that when recv/send 
+// return 0 the socket has unexpectedly closed (by CTRL + C or SIGKILL etc.) 
+// Therefore, throw an execption which is caught by the caller and handled appropriatelly
 void socket_read(int sock, void* address_, int size) {
     int ret;
     char* address = (char*)address_;
 
     while (size > 0) {
-        ASSERT_NEQ(ret = read(sock, address, size), -1);
+        if ((ret = recv(sock, address, size, 0)) <= 0 && errno != EINTR)
+            throw Exception("socket_read()");
+
         size -= ret;
         address += ret;
     }
@@ -28,7 +40,9 @@ void socket_write(int sock, void* address_, int size) {
     char* address = (char*)address_;
 
     while (size > 0) {
-        ASSERT_NEQ(ret = write(sock, address, size), -1);
+        if ((ret = send(sock, address, size, MSG_NOSIGNAL)) <= 0 && errno != EINTR)
+            throw Exception("socket_write()");
+
         size -= ret;
         address += ret;
     }
@@ -42,15 +56,18 @@ void send_msg(int sock, string msg) {
 
 string receive_msg(int sock) {
     size_t len;
+
     socket_read(sock, &len, sizeof(len));
-
+    
     char* str = new char[len];
-    socket_read(sock, str, len);
-
-    string msg(str);
-    delete [] str;
-
-    return msg;
+    TRY_CATCH(
+        socket_read(sock, str, len);
+        string msg(str);
+        delete [] str;
+        return msg;,
+        delete [] str;
+        throw e;
+    )
 }
 
 void send_args(int sock, size_t argc, char** argv) {
@@ -70,13 +87,25 @@ char** receive_args(int sock, size_t* argc) {
     char** argv = new char*[*argc + 1];
     argv[*argc] = NULL;
 
-    for (size_t i = 0; i < *argc; i++) {
-        size_t len;
-        socket_read(sock, &len, sizeof(len)); // Read bytes of each arg, contains '\0'
+    size_t i = 0;
 
-        argv[i] = new char[len];
-        socket_read(sock, argv[i], len);
-    }
+    TRY_CATCH(
+        for (; i < *argc; i++) {
+            argv[i] = NULL;
+
+            size_t len;
+            socket_read(sock, &len, sizeof(len)); // Read bytes of each arg, contains '\0'
+
+            argv[i] = new char[len];
+            socket_read(sock, argv[i], len);
+        },
+        
+        for (size_t j = 0; j <= i; j++)
+            delete [] argv[j];
+
+        delete [] argv;
+        throw e;
+    )
 
     return argv;
 }
